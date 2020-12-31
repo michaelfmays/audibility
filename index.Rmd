@@ -1,0 +1,864 @@
+---
+title: "Modeling the Accuracy of Neurophysiological Stimuli Audibility Measurement With Generalized Linear Models"
+author: "Michael Mays"
+date: "Originally prepared: December 2019"
+output:
+  bookdown::html_document2:
+    fig_caption: yes
+    number_sections: no
+    toc: yes
+    toc_float: yes
+fontsize: 11pt
+extra_dependencies: ["booktabs", "floatrow", "amsmath", "hyperref", "xcolor"]
+bibliography: "Final.bib"
+biblio-style: "apalike"
+in-header:
+  - \usepackage{mathtools}
+  - \usepackage{textcomp}
+  - \usepackage{booktabs}
+  - \usepackage{apacite}
+  - \usepackage{natbib}
+  - \usepackage[hidelinks]{hyperref}
+  - \hypersetup{breaklinks=true}
+  - \usepackage{multirow}
+---
+
+```{r _data, echo=FALSE, message=FALSE, warning=F, include=F}
+knitr::opts_chunk$set(echo = F, message=F,
+                      warning=F, fig.width=10,
+                      fig.height=8,
+                      out.width="\\linewidth")
+
+options(scipen=999)
+library(car)
+library(MASS)
+library(dplyr)
+library(tidyr)
+library(broom)
+library(leaps)
+library(boot)
+library(heavy)
+library(selectiveInference)
+library(mctest)
+library(ppcor)
+library(rms)
+library(lme4)
+library(ggplot2)
+library(ggResidpanel)
+library(lattice)
+library(xtable)
+library(sjstats)
+library(knitr)
+library(glmnet)
+library(mctest)
+library(gridExtra)
+library(caret)
+
+theme_general <- theme(panel.background = 
+                         element_rect(fill="gray95"),
+                       plot.background = 
+                         element_rect(fill="gray95"),
+                       panel.grid.major.x = element_blank(),
+                       panel.grid.minor.x = element_blank(),
+                       panel.grid.major.y = 
+                         element_line(color = "gray80"),
+                       panel.grid.minor.y =
+                         element_line(color = "gray80",
+                                      linetype="dotted"),
+                       axis.ticks = element_blank(),
+                       legend.position = "right",
+                       legend.background =
+                         element_rect(fill="gray95"),
+                       plot.title = element_text(hjust = 0.5),
+                       plot.subtitle = element_text(hjust = 0.5),
+                       axis.title.y =                      element_text(margin=margin(0,10,0,0)),
+                       axis.title.x =                          element_text(margin=margin(10,0,0,0)))
+
+```
+
+# Summary
+
+```{r 2 data, echo=F, message=F, include=F, cache=T}
+#### Data wrangling ####
+aud <- read.csv("audibility.csv", header = TRUE)
+
+# Rayleigh pass/fail
+aud$RT <- ifelse(aud$Rayleigh<0.05, 1, 0)
+aud$RT <- as.factor(aud$RT)
+
+# F test pass/fail
+aud$FT <- ifelse(aud$Ftest<0.05, 1, 0)
+aud$FT <- as.factor(aud$FT)
+
+# Audibility pass/fail
+aud$Audible <- ifelse(aud$SL>=0, 1, 0)
+aud$Audible <- as.factor(aud$Audible)
+
+# Rayleigh correct/incorrect
+aud$RT_C <- ifelse(aud$RT==aud$Audible, 1, 0)
+aud$RT_C <- as.factor(aud$RT_C)
+
+# F test correct/incorrect
+aud$FT_C <- ifelse(aud$FT==aud$Audible, 1, 0)
+aud$FT_C <- as.factor(aud$FT_C)
+
+# Frequency groups
+for(i in 1:nrow(aud)){
+  car <- as.character(aud[i,2])
+  nl <- nchar(car)
+  
+  if(substring(car, nl-1, nl)=="F1"){
+    aud$Freq[i] <- "Low"
+  }else if(substring(car, nl-1, nl)=="F2"){
+    aud$Freq[i] <- "Med"
+  }else {aud$Freq[i] <- "High"}
+}
+aud$Freq <- factor(aud$Freq, levels = c("Low", "Med", "High"))
+
+# SPL groups
+for(i in 1:nrow(aud)){
+  SPL <- as.character(aud[i,3])
+  
+  if(SPL==20||SPL==35){
+    aud$SPL_Group[i] <- "Low"
+  }else {aud$SPL_Group[i] <- "High"}
+}
+aud$SPL_Group <- as.factor(aud$SPL_Group)
+aud$SPL_Group <- relevel(aud$SPL_Group, ref="Low")
+
+# Carrier groups
+for(i in 1:nrow(aud)){
+  car <- as.character(aud[i,2])
+  
+  if(substring(car, 1, 1)=="a"){
+    aud$CG[i] <- "a"
+  }else if(substring(car, 1, 1)=="i"){
+    aud$CG[i] <- "i"
+  }else if(substring(car, 1, 1)=="u"){
+    aud$CG[i] <- "u"
+  }else if(substring(car, 1, 1)=="s"){
+    aud$CG[i] <- car
+  }
+}
+aud$CG <- as.factor(aud$CG)
+
+# Subject threshold
+aud$Thresh <- (-aud$SL)+aud$SPL
+aud$SPL <- as.factor(aud$SPL)
+```
+
+In linguistic neurology and neurobiology, electro-encephalograms have been used to measure envelope-following responses by analyzing brain waves for the characteristic features of sound audibility: the amplitude of the sound wave and its phase. This report deploys mixed-effects logistic regression models to evaluate the accuracy of two EFR detection methods---F-tests for amplitude and Rayleigh tests for phase consistency---in addition to analysing whether the accuracy of these tests varies by phoneme or sound frequency. Further analysis predicted the mean sensation level required to trigger a detection for each test, including extensions of these predictions to different phonemes and frequencies.
+
+## Major Findings
+
+* Using receiver operating curves on mixed-effects models, both the Rayleigh test and the F-test for EFRs were found to be reasonably accurate measures of audibility with significant ability to distinguish "true positive" audible stimuli from "true negative" inaudible stimuli.
+* There was no significant evidence that the two EFR tests had significantly different discrimination ability as determined by performing a paired bootstrap test for area under the receiver operating curve.
+* Chi-square tests on goodness of fit on the distribution of correctly detected audible stimuli resulting from cross-validated predictions found that the accuracy of the tests were invariant across carrier and frequency groups, but did respond differently across levels of sound pressure level.
+* The minimum sensation levels required to produce better-than-random predicted probabilities of detecting an EFR were similar between the two tests, but were relatively lower for high-frequency carriers. 
+
+# Introduction
+
+In the fields of linguistic neurology and neurobiology, electro-encephalograms (EEGs) are one common scientific method of measuring the response of subjects to stimuli [see @Egg; also, @Krish]. In particular, envelope-following responses (EFRs) measure neural activity in subjects via scalp electrodes corresponding to the two key features of sound detection: the amplitude of the sound wave and its phase [@Krish]. The former refers to the magnitude of pressure variations in a sound wave; loud sounds are transferred through `taller' waves, and a subject's brain waves will respond to louder sounds by increasing in amplitude. The latter measures the periodicity of the wave in terms of the change in frequency of the subject's brain waves; detected sounds will shift the subject's pattern of brain waves, and this shift is measured in degrees.
+
+This report analyzes data from an experiment that measured the EFRs of 21 subjects. Each subject was played eight speech sounds ("carriers") at each of four volumes (sound pressure levels, or SPLs, measured in decibels), 20dB, 35dB, 50dB, and 65dB. These carriers correspond to five phonemes: /a/, /i/, /u/, s, and sh. Each of the first three phonemes was given two formants, F1 and F2, which are different formulations of the phoneme, and which are low- and mid-frequency dominant, respectively. The latter two phonemes, s and sh, are high-frequency dominant. Heuristically, phonemes can be thought of as the sub-syllabic building blocks of words, each with its own 'family' of sound waves, while frequencies (and thereby formants) correspond to the qualities of the wave produced by various sounds in that 'family'; when percieved by the listener, different frequencies are percieved as different pitches and timbres.
+
+The eight carrier/SPL combinations were played to each subject, and the subjects' EFRs were measured by their amplitude and phase. Whether or not the EFR 'detected' a sound was determined by performing an F-test on its amplitude and a Rayleigh test on its phase. In short, the F-test measured whether there was more variability in the amplitude of the subject's brain waves during the sound playback as compared to their baseline brain wave amplitude, and the Rayleigh test measures whether the baseline brain wave periodicity of the subject was shifted or 'disrupted' when the sound was played. Each sound was considered 'detected' by a given test when its p-value was less than 0.05. 
+
+In addition, whether or not a sound was audible to the subject was determined by comparing the subject's known audible threshold for the sound to the SPL at which the sound was played. Each subject had a different threshold for each phoneme/formant combination; for example, the SPL required for a subject to hear the /a/ phoneme with the F1 formant was known, and this threshold SPL varied from the subject's threshold for the /u/ phoneme with the F1 formant or the /a/ phoneme with the F2 formant. The resulting sensation level (SL) was thus the difference between the SPL at which a sound was played and the SPL at which it would be audible to the subject; positive SLs were audible, while negative SLs were inaudible.
+
+The goal of this report is to determine the effectiveness of the two EFR detection methods---the F-test for amplitude and the Rayleigh test for phase consistency---in detecting EFRs, along with extensions of the models therein to prediction of response. After laying out the report's methods in the next section, the results of the analysis will be layed out, and the report will conclude with a discussion of the implications, limitations, and future research opportunities of the analysis.
+
+# Materials & Methods
+
+## Data
+
+The data set contained a total of 672 observations, corresponding to each of the 32 carrier/SPL combinations for each of 21 subjects. These were coded as carrier, SPL, and subject ID, respectively. Also included was the the SL for each observation, along with the resultant p-values for the Rayleigh and F-tests on that observation. There were no missing values for any observation on any variable. The p-values for each test were used to create binary variables indicating detection; a p-value of 0.05 or less was coded as detected (1), and a p-value greater than 0.05 was coded as not detected (0). In addition, a binary variable was created to indicate audibility. Positive SLs were coded as audible (1), and negative SLs were coded as inaudible (0).
+
+## Model Selection & Fitting
+
+The experiment was conducted using repeated measures on each subject, and each subject was played every carrier/SPL combination. Given that each subject has an individual threshold SPL for each phoneme/formant combination, EFR measurements for each carrier will be correlated across SPLs. Based on this experimental design, mixed-effects logistic regression was selected as the primary model for analysis. Subject was treated as a random effect; any other variable in a given model was treated as a fixed effect.
+
+Because models were fit to answer specific questions, exact details on model fitting will be given in the analysis section. However, initial models were fit on a training subset corresponding to a random sample of the initial dataset; half of the observations were used to train and fit models, while the other half was used for testing, validation, evaluation and prediction. One set of models utilized k-fold validation independent of the intial training-testing split, and the details of the methodology behind those models will be detailed in the relevant part of the analysis.
+
+```{r models 2, echo=F, cache=T, message=F, include=F}
+#### Models ####
+# Split data
+set.seed(77)
+testfolds <- createFolds(1:nrow(aud), k=2)
+train_data <- aud[testfolds$Fold1,]
+test_data <- aud[-testfolds$Fold1,]
+
+r_test <- glmer(Audible~RT+(1|Participant),
+               data=train_data,
+               family=binomial)
+summary(r_test)
+
+f_test <- glmer(Audible~FT+(1|Participant),
+               data=train_data,
+               family=binomial)
+summary(f_test)
+
+rf_test <- glmer(Audible~RT+FT+(1|Participant),
+               data=train_data,
+               family=binomial)
+summary(rf_test)
+
+```
+
+# Analysis
+
+The first point of analysis was determining the accuracy of the Rayleigh and F-tests in detecting audibility. Ideally, both tests would detect an EFR only when the noise was audible to the subject (that is, when SL is positive), and not detect an EFR otherwise; in other words, the goal for the tests is to detect true positive responses and not detect true negative responses. An erroneously detected response is a false positive, and its erroneous non-detection counterpart is a false negative. Thus, a detection or non-detection for each test can be classified as one of four orthogonal outcomes.
+
+\begin{table}[!h]
+\begin{center}
+\begin{tabular}{c || c c}
+\multicolumn{3}{c}{~~~~~~~~Test Result}  \\ \hline
+'Truth' & Detected & Not Detected\\
+\hline
+Audible & True Positive (TP) & False Negative (FN) \\
+Inaudible & False Positive (FP) & True Negative (TN)
+\end{tabular}
+\caption{Audibility Versus Detection Classifications}
+\end{center}
+\end{table}
+
+Two ways of evaluating the accuracy of the Rayleigh and F-tests in detecting audibility are comparing their true negative rate (TNR, or "specificity") to their true positive rate (TPR, or "sensitivity"), and comparing their TPR (or "recall") to their precision (the proportion of positive detections that were TPs). More precisely, these measures can be displayed mathematically as shown below.
+
+\begin{align*}
+TNR &= \frac{TN}{FP+TN}\text{,}~~TPR=\frac{TP}{TP+FN}\\
+\text{Recall}&= FPR\text{,}~~~~~~~~~\text{Precision}=\frac{TP}{TP+FP}
+\end{align*}
+
+In order to compare these two sets of accuracy criteria, three baseline mixed-effect logistic regression models were fit on the training data. Each model included subject as a random effect; the first two contained one binary detection variable corresponding to one of the two tests (the baseline R and baseline F models), and the third baseline R-F model contained both. These models were perameterized as follows:
+
+\begin{align*}
+\text{(Baseline R)}~~y_i&=\mu_R + \beta_{R} X_{R,i} + \alpha_{R,~j[i]} + \varepsilon_i\\
+\text{(Baseline F)}~~y_i&=\mu_F + \beta_{F} X_{F,i} + \alpha_{F,~j[i]} + \varepsilon_i\\
+\text{(Baseline R-F)}~~y_i&=\mu_{RF} + \beta_{R} X_{R,i} + \beta_{F} X_{F,i} + \alpha_{RF,~j[i]} + \varepsilon_i
+\end{align*}
+
+Here, $y_i$ is a binary audibility outcome variable; it has the value 1 when SL is positive (the carrier/SPL combination was audible), and 0 when SL is negative (the carrier/SPL combination was inaudible). The predictor variable $X_{t,i}$ is a binary variable encoding whether the respective EFR test ($t=R,~F$) detected an EFR for the i$^{th}$ observation ($X_{t,i}=1$) or did not ($X_{t,i}=0$). The $\mu_t$ coefficients correspond to the overall mean log-odds of the stimuli being audible for the when the respective EFR test ($t=R,~F$) did not detect an EFR ($X_{t,i}=0$); in the baseline R-F model, $\mu_{RF}$ reflects the overall mean log-odds of the stimuli being audible for the when neither EFR test detects an EFR ($X_{R,i}=X_{F,i}=0$). The slope coefficients $\beta_t$ represent the change in log-odds of the stimuli being audible when detected by test $t$ ($X_{t,i}=1$) relative to the overall log-odds of audibility $\mu_{t}$. In the baseline R-F model, the respective $\beta_t$ coefficients assume the value of the other predictor variable is held constant; that is, $\beta_R$ in the baseline R-F model is the change in log-odds of the stimuli being audible when detected by the Rayleigh test ($X_{R,i}=1$) relative to the overall log-odds of audibility $\mu_{RF}$ for a fixed value of $X_{F,i}=\{0,1\}$. The random effect coefficient $\alpha_{t,~j[i]}$ corresponds to the random effect of the $j^{th}$ subject ($j=1,\dots,21$) from which observation $i$ was taken in the model including test $t$. The subscript $t=RF$ simply indicates that the model includes both the Rayleigh and F-tests. Finally, $\varepsilon_i$ represents the error term for the $i^{th}$ observation. These models assume that the log-odds of the binary response have a linear relationship to the predictors, that the errors for the $j^{th}$ subject are independent and normally distributed with a zero mean, that the random effects term's variance has a normal distribution with zero mean, which are all met by the model.
+
+First, it is worth noting the motivation for testing the accuracy of the three models. Simply put, the dataset contains a heavily unbalanced number of audible stimuli. The result is that Wald tests on the fixed effects coefficients in all three models were found to be significant, including intercept coefficients. That is, the log-odds of a stimuli being audible were significantly greater than zero even when not detected by an EFR test, and the marginal increase in the log-odds of a stimuli being audible when detected by an EFR test was also significant for all three baseline models. In other words, naively guessing that a stimuli would be audible, regardless of EFR detection, would produce log-odds of correct guesses significantly greater than zero, and the log-odds of this guess being correct would increase with EFR detection. Consider the following Wald Tests on the baseline R model. The hypotheses and test statistics for the tests are:
+
+\begin{align*}
+&H_0:~\mu_R = 0,~~~H_A:~\mu_R\neq 0\\
+&H_0:~\beta_R = 0,~~~H_A:~\beta_R\neq 0\\
+\end{align*}
+
+\begin{align*}
+&z^*_{\mu_R} = \frac{\hat{\mu}_R}{s\{\hat{\mu}_R\}}, ~~~~~~
+z^*_{\beta_R} = \frac{\hat{\beta}_R}{s\{\hat{\beta}_R\}}
+\end{align*}
+
+The values of the test statistics in the baseline R model are $z^*_{\mu_R}=4.419$ ($p=0.00001$) and $z^*_{\beta_R}=5.491$ ($p=0.00000004$). The respective fitted model coefficients, $\hat{\mu}_R=0.8325$ and $\hat{\beta}_R=3.017686$, represent a mean probability of $\hat{\pi}_i\approx 0.697$ for the $i^{th}$ the stimuli being audible when not detected by the Rayleigh test, and a mean probability of audibility of $\hat{\pi}_i\approx 0.979$ when detected by Rayleigh test. Similar results were found for the baseline F and baseline R-F models. 
+
+```{r logit 2 prob, eval=F, echo=F, message=F, include=F}
+logit2prob <- function(logit){
+  odds <- exp(logit)
+  prob <- odds / (1 + odds)
+  return(prob)
+}
+
+coefs_R <- coef(summary(r_test))
+
+logit2prob(coefs_R[1,1])
+logit2prob(coefs_R[1,1]+coefs_R[2,1])
+
+```
+
+```{r ROC, echo=F, include=F, message=F}
+#### ROC ####
+library(pROC)
+
+link_scores_RF <- predict(rf_test, test_data, type="link")
+resp_scores_RF <- predict(rf_test, test_data, type="response")
+score_data_RF <- data.frame(link=link_scores_RF,
+                           response=resp_scores_RF,
+                           Audible=test_data$Audible)
+ROC_RF <- roc(test_data$Audible, resp_scores_RF,direction="<")
+
+power.roc.test(ROC_RF, power=0.8)
+
+link_scores_R <- predict(r_test, test_data, type="link")
+resp_scores_R <- predict(r_test, test_data, type="response")
+score_data_R <- data.frame(link=link_scores_R,
+                           response=resp_scores_R,
+                           Audible=test_data$Audible)
+ROC_R <- roc(test_data$Audible, resp_scores_R,direction="<")
+
+power.roc.test(ROC_R, power=0.8)
+
+link_scores_F <- predict(f_test, test_data, type="link")
+resp_scores_F <- predict(f_test, test_data, type="response")
+score_data_F <- data.frame(link=link_scores_F,
+                           response=resp_scores_F,
+                           Audible=test_data$Audible)
+ROC_F <- roc(test_data$Audible, resp_scores_F, direction="<")
+
+power.roc.test(ROC_F)
+
+roc.test(ROC_R, ROC_F, method="bootstrap",
+         paired=TRUE)
+roc.test(ROC_R, ROC_F, method="specificity", specificity=.55,
+         paired=TRUE)
+
+power.roc.test(ROC_R, ROC_F, method="bootstrap")
+
+```
+
+To more meaningfully measure each model's accuracy, reciever operating characterist (ROC) curves were fit to the models. ROC curves plot the cumulative TPR ("sensitivity") against the cumulative TNR ("specificity") for the model, and the resulting curve can be thought of as the model's power as a function of its type I error. The test data was used to predict mean response probabilities based on the baseline R, F, and R-F models that were fit on the training data. The area under the resulting curves (AUC) corresponds to the probability that the model will assign a random positive response a predicted probability higher than a random negative response, indicating the discriminatory ability of the model. The precision-recall (PR) curve works similarly, and its interpretation is similar. As noted above, recall is equivalent to sensitivity, and measures the proportion of positive responses that were detected as TPs, while precision measures the proportion of positive detections that were TPs. The resulting plots for the baseline R and baseline F models are given below.
+
+```{r roc-prc, include=T, fig.align="center", fig.cap="ROC and PR Curves for Baseline R and Baseline F Models."}
+par(mfrow=c(1, 2))
+par(mar=c(3, 2.5, 1, 1))
+{plot(ROC_F, main="ROC Curve for \nRayleigh and F-Tests",
+     type="l", col="blue", lwd=2, cex.main=1)
+lines(coords(ROC_R, "all", ret=c("se","sp"), transpose = F),
+      col="red", lwd=2)
+legend(x=0.65, y=0.15, legend = c("Rayleigh", "F-Test"),
+       col=c("red", "blue"), lty=c(1,1), cex=1.2)}
+par(mar=c(4.5, 4, 3, 1))
+{plot(y~x,
+      data=data.frame(x=coords(ROC_R, "all", ret=c("recall", "precision"),
+                 transpose = F)[,1], y=c(coords(ROC_R,
+                                             "all",
+                                             ret=c("recall", "precision"),
+                                             transpose = F)[1:2,2], 1)),
+     ylim=c(0.81, 1), type="l", col="red", lwd=2,
+     main="Precision-Recall Curve for \nRayleigh and F-Tests",
+     ylab="Precision", xlab="Recall", cex.main=1)
+lines(x=coords(ROC_F, "all", ret=c("recall", "precision"),
+                 transpose = F)[,1],
+      y=c(coords(ROC_F, "all", ret=c("recall", "precision"),
+                 transpose = F)[1:2,2], 1),
+      type="l", col="blue", lwd=2)
+lines(x=c(0, 1), y=c(1, 0.815), lty=2)
+legend(x=0.31, y=0.15, legend = c("Rayleigh Test", "F-Test"),
+       col=c("red", "blue"), lty=c(1,1), cex=0.8)}
+```
+
+Clearly, the two tests both distinguish true positives at better-than-random rates, with $AUC_R=0.8598$ and $AUC_F=0.8492$. For the baseline R-F model, the ROC curve yielded a marginal improvement of $AUC_{RF}=0.8677$, with the curve being displayed below. Although I could not find any statistical test to measure the significance of AUC values, empirical and field-specific contextual factors indicate that an AUC larger than $\approx 0.715$ is considered "strong" discrimination in linguistics and psychology [@Rus]. 
+
+```{r roc-prc-rf, include=T, fig.align="center", fig.cap="ROC and PR Curves for Baseline R and Baseline F Models."}
+par(mfrow=c(1, 2))
+par(mar=c(3, 2.5, 1, 1))
+plot(ROC_RF, main="ROC Curve for \nRayleigh + F-Test",
+     col="purple", cex.main=1)
+par(mar=c(4.5, 4, 3, 1))
+{plot(formula=precision~recall, 
+     data=coords(ROC_RF, "all", ret=c("recall", "precision"),
+                 transpose = F), type="l", col="purple", lwd=2,
+     ylim=c(0.8, 1),
+     main="Precision-Recall Curve for \nRayleigh + F-Test",
+     ylab="Precision", xlab="Recall", cex.main=1)
+lines(x=c(0, 1), y=c(1, 0.8), lty=2)}
+```
+
+To determine whether there was a significant difference in accuracy between the baseline R and baseline F models, a paired bootstrap test for difference of AUC was conducted in accordance with Hanley and McNeil; the ROC were tested as paired because their predictions shared the same response data [@Hanley]. The method for this test is as follows. First, 2,000 stratified resamples were taken from the test dataset with replacement, each containing the same number of positive and negative responses as the original data on which the ROC curve was fit. Then, the ROC curves were fit by comparing the resampled predicted probabilities to the corresponding responses in the original data, and AUC was computed for the new curves. The standardized difference of the two curves was calculated as $D=\frac{AUC_R-AUC_F}{s}$ where $AUC_R$ and $AUC_F$ are the original ROC curves' AUC, and $s$ is the standard deviation of the differences between the AUCs of all bootstrap resamples. The p-value under the null hypothesis for the resulting $D$ is found using the asymptotic distribution of $D$, which is a standard normal random variable. The hypotheses for the test are as follows [@Hanley].
+
+\begin{align*}
+&H_0:~ AUC_R-AUC_F=0, ~~~~H_A: AUC_R-AUC_F\neq 0
+\end{align*}
+
+The value of the test statistic $D$, as defined above, was $D=0.604$, and the corresponding p-value was $p=0.55$. Thus, there is not strong evidence that the baseline R and baseline F models have significantly different AUCs, indicating that there is not strong evidence that the Rayleigh and F-tests have significantly different discriminatory capabilities.
+
+```{r chisqs1, echo=F, cache=T, message=F, include=F}
+library(caret)
+set.seed(99)
+folds <- createFolds(1:672, k=10)
+
+valid <- function(formula, data, fold){
+  
+  pred_vec <- rep(NA, nrow(data))
+  
+  for(i in 1:length(fold)){
+    
+  p <- rep(NA, length(fold[[i]]))
+  
+  model <- glmer(formula,
+                 data=data[-fold[[i]],],
+                 family=binomial)
+  
+  p <- (predict(model, data[fold[[i]],], type="response")>.5)
+
+    for(j in 1:length(fold[[i]])){
+      pred_vec[as.numeric(names(p[j]))] <- p[j]
+    }
+    
+  }
+  pred_vec <- as.numeric(pred_vec)
+  
+  true_pos <- rep(NA, nrow(data))
+  
+  for(j in 1:nrow(data)){
+    if(pred_vec[j]==data$Audible[j]){
+      true_pos[j] <- 1
+      }else{true_pos[j] <- 0}
+  }
+    
+  return(true_pos)
+}
+```
+
+```{r chisqs data, echo=F, cache=T, message=F, include=F}
+f1 <- as.formula("Audible~RT+Carrier+(1|Participant)")
+f2 <- as.formula("Audible~RT+Freq+(1|Participant)")
+f3 <- as.formula("Audible~RT+SPL+(1|Participant)")
+
+pred1 <- valid(f1, aud, folds)
+pred2 <- valid(f2, aud, folds)
+pred3 <- valid(f3, aud, folds)
+
+f4 <- as.formula("Audible~FT+Carrier+(1|Participant)")
+f5 <- as.formula("Audible~FT+Freq+(1|Participant)")
+f6 <- as.formula("Audible~FT+SPL+(1|Participant)")
+
+pred4 <- valid(f4, aud, folds)
+pred5 <- valid(f5, aud, folds)
+pred6 <- valid(f6, aud, folds)
+```
+
+```{r chisq2, echo=F, message=F, cache=T, include=F}
+# Plots for RT
+pt1 <- data.frame(rbind(ftable(pred1~aud$Carrier)),
+                  "Carrier"=unique(aud$Carrier))
+colnames(pt1) <- c("Incorrect", "Correct", "Carrier")
+pt1$Prop <- pt1$Correct/(pt1$Incorrect+pt1$Correct)
+
+
+pt2 <- data.frame(rbind(ftable(pred2~aud$Freq)),
+                  "Freq"=unique(aud$Freq))
+colnames(pt2) <- c("Incorrect", "Correct", "Freq")
+pt2$Prop <- pt2$Correct/(pt2$Incorrect+pt2$Correct)
+
+ptt2 <- prop.table(as.matrix(pt2[,1:2]), margin = 2)
+
+pt3 <- data.frame(rbind(ftable(pred3~aud$SPL)),
+                  "SPL"=unique(aud$SPL))
+colnames(pt3) <- c("Incorrect", "Correct", "SPL")
+pt3$Prop <- pt3$Correct/(pt3$Incorrect+pt3$Correct)
+
+cs1 <- chisq.test(x=pt1[,2])
+cs2 <- chisq.test(x=ptt2[,2], p=c(0.375, 0.375, 0.25))
+cs3 <- chisq.test(x=pt3[,2])
+
+# Plots for FT
+pt4 <- data.frame(rbind(ftable(pred4~aud$Carrier)),
+                  "Carrier"=unique(aud$Carrier))
+colnames(pt4) <- c("Incorrect", "Correct", "Carrier")
+pt4$Prop <- pt4$Correct/(pt4$Incorrect+pt4$Correct)
+
+pt5 <- data.frame(rbind(ftable(pred5~aud$Freq)),
+                  "Freq"=unique(aud$Freq))
+colnames(pt5) <- c("Incorrect", "Correct", "Freq")
+pt5$Prop <- pt5$Correct/(pt5$Incorrect+pt5$Correct)
+
+
+ptt5 <- prop.table(as.matrix(pt5[,1:2]), margin = 2)
+
+pt6 <- data.frame(rbind(ftable(pred6~aud$SPL)),
+                  "SPL"=unique(aud$SPL))
+colnames(pt6) <- c("Incorrect", "Correct", "SPL")
+pt6$Prop <- pt6$Correct/(pt6$Incorrect+pt6$Correct)
+
+cs4 <- chisq.test(x=pt4[,2])
+cs5 <- chisq.test(x=ptt5[,2], p=c(0.375, 0.375, 0.25))
+cs6 <- chisq.test(x=pt6[,2])
+```
+
+A second question was whether the single-test models' discriminatory capabilities varied across carriers, frequency groups, or SPL, a custom function was written to perform 10-fold prediction across the entire dataset using programatically-constructed mixed-effects logistic regression models (the code will be given in the appendix). The data was separated into 10 orthogonal subsets (without replacement), and for each subset, a model was fit on the remaining data (that is, the other 9 folds, considered as one "training set") for one of the six test/item-level fixed effect combinations. The models were specified as follows.
+
+\begin{align*}
+y_i&=\mu_t + \beta_{t1} X_{t,1i} + \beta_{t2} X_{t,2i} + \dots + \beta_{t\ell} X_{t,\ell i} + \alpha_{t,~j[i]} + \varepsilon_i
+\end{align*}
+
+The variables $X_{t,p i}$ ($p=\{2,3,\dots, \ell\}$, where $\ell$ is the number of levels of the categorical predictor) are dummy variables encoding whether the i$^{th}$ observation corresponds to the $p^{th}$ level of the categorical predictor in the model ($X_{t,pi}=1$) or did not ($X_{t,pi}=0$). When all $X_{t,pi}=0$, $\mu_{t}$ represents the log-odds of the stimuli being audible for the reference level of the categorical predictor in the model. The additional $\ell-1$ slope coefficients $\beta_{tp}$ represent the change in log-odds of the stimuli being audible relative to the overall log-odds of audibility for the reference level $\mu_{t}$ for a fixed detection status of test $t$ ($X_{t,1i}=\{0, 1\}$). The interpretation of the response $y_i$ remains the same as in the baseline models. Finally, the interpretation of the test-specific detection slope coefficient $\beta_{t1}$, detection indicator $X_{t,1i}$, and patient random effect coefficient $\alpha_{t,~j[i]}$ remain the same as in the baseline models when considering a given level of the categorical predictor. Similarly, the meaning of $\varepsilon_i$ remains the same in this model. Note that, in these models, SPL is treated as a categorical factor because the goal is to distinguish the effect of a given SPL on a model's ability to predict audibility, rather than to measure the marginal effect on predicted audibility caused by an increase in SPL. These models assume that the log-odds of the binary response have a linear relationship to the predictors, that the errors for the $j^{th}$ subject are independent and normally distributed with a zero mean, that the random effects term's variance has a normal distribution with zero mean, which are all met by the model.
+
+After a model was fit using the "training set," the "test set" was used to predict probabilities of a stimuli being audible for each observation in the test set. If the probability assigned to the response was greater than or equal to $0.5$, the predicted response was coded as "audible" ($\hat{y}_{h(new)}=1$), and vice-versa for values less than $0.5$ ($\hat{y}_{h(new)}=0$). Each prediction was then compared to the actual response of its corresponding original observation, and if the value of the prediction matched the 'true' response, the prediction was recorded in a separate variable as accurate ($A_{i}=1$); if not, it was recorded as inaccurate ($A_{i}=0$). After the 10-fold prediction process was complete, the accuracy variable was matched with corresponding observations in the full dataset, and the accuracy of the model was calculated as the proportion of predictions coded as accurate for each level of the categorical predictor. The results are displayed below.
+
+```{r r-chi, include=T, fig.align="center", fig.cap="Accuracy of Rayleigh Test-Based Model By Level of Each Categorical Predictor."}
+{par(mfrow=c(1,3))
+  par(mar=c(4.5, 3, 3, 0.5))
+barplot(pt1$Prop, names.arg=pt1$Carrier, ylim=c(0,1), las=1,
+        main="Rayleigh Test \nAccuracy by Carrier",
+        xlab="Carrier", ylab="Proportion",
+         cex.axis = 0.8, cex.names = 1, cex.main=1.6, cex.lab=1.5)
+par(mar=c(4.5, 1, 3, 0.5))
+barplot(pt2$Prop, names.arg=pt2$Freq, ylim=c(0,1), las=1,
+        main="Rayleigh Test \nAccuracy by Freq",
+        xlab="Frequency Group", yaxt="n",
+         cex.axis = 0.95, cex.names = 1.1, cex.main=1.6, cex.lab=1.5)
+barplot(pt3$Prop, names.arg=pt3$SPL, ylim=c(0,1), las=1,
+        main="Rayleigh Test \nAccuracy by SPL",
+        xlab="SPL", yaxt="n",
+        cex.axis = 0.95, cex.names = 1.1, cex.main=1.6, cex.lab=1.5)
+}
+```
+
+```{r f-chi, include=T, fig.align="center", fig.cap="Accuracy of F-Test-Based Model By Level of Each Categorical Predictor."}
+{par(mfrow=c(1,3))
+  par(mar=c(4.5, 3, 3, 0.5))
+barplot(pt4$Prop, names.arg=pt4$Carrier, ylim=c(0,1), las=1,
+        main="F-Test Accuracy \nby Carrier",
+        xlab="Carrier", ylab="Proportion",
+         cex.axis = 0.8, cex.names = 1, cex.main=1.6, cex.lab=1.5)
+par(mar=c(4.5, 1, 3, 0.5))
+barplot(pt5$Prop, names.arg=pt5$Freq, ylim=c(0,1), las=1,
+        main="F-Test Accuracy \nby Freq",
+        xlab="Frequency Group", yaxt="n",
+         cex.axis = 0.95, cex.names = 1.1, cex.main=1.6, cex.lab=1.5)
+barplot(pt6$Prop, names.arg=pt6$SPL, ylim=c(0,1), las=1,
+        main="F-Test Accuracy \nby SPL",
+        xlab="SPL", yaxt="n",
+         cex.axis = 0.95, cex.names = 1.1, cex.main=1.6, cex.lab=1.5)
+}
+```
+
+To determine whether the probabilities of detection for each model were significantly affected by frequency group, carrier, or SPL, a Chi-square test for goodness of fit was performed on the success probability distribution of each of the six models. Each test had the same formulation of hypotheses.
+
+\begin{align*}
+&H_0:~O_p=E_p, ~~~~~~H_A:~O_p\neq E_p
+\end{align*}
+
+Here, $O_p$ represents the observed proportion of accurate predictions located in level $p$ of the categorical predictor in a given model ($p=\{1,2,\dots,\ell \}$), and $E_p$ represents the expected proportion of accurate predictions located in level $p$ of the categorical predictor when the null hypothesis is true, which is $\frac{1}{\ell}$ for each level $p$, assuming there is no difference in accurate prediction between different levels of the predictor. The test statistic was defined as follows.
+
+\begin{align*}
+\chi^2&= \sum_{p=1}^{n} \frac{(O_p-E_p)^2}{E_p}
+\end{align*}
+
+The table below shows the values of the test statistic and their corresponding p-values for each of the six models.
+
+\begin{table}[!h]
+\begin{center}
+\begin{tabular}{c r || c c}
+Test & Cat. Variable & Test Statistic & P-Value\\
+\hline
+Rayleigh & Carrier & `r round(cs1$statistic, 2)` & `r round(cs1$p.value, 4)`\\
+& Freq. Group & `r round(cs2$statistic, 2)` & `r round(cs2$p.value, 4)`\\
+& SPL & `r round(cs3$statistic, 2)` & `r round(cs3$p.value, 4)`\\
+\hline
+F-Test & Carrier & `r round(cs4$statistic, 2)` & `r round(cs4$p.value, 4)`\\
+& Freq. Group & `r round(cs5$statistic, 2)` & `r round(cs5$p.value, 4)`\\
+& SPL & `r round(cs6$statistic, 2)` & `r round(cs6$p.value, 4)`
+\end{tabular}
+\caption{Audibility Versus Detection Classifications}
+\end{center}
+\end{table}
+
+The data do not provide evidence that audible stimuli accurately detected by EFRs in either the Rayleigh test or the F-Test are sensitive to changes in carrier or frequency group, but there is relatively strong evidence that they are both variant across SPL. This result is not particularly surprising; 20 dB is roughly the volume of a ticking watch, so while the stimuli might be audible, it is unlikely to effect the subject's EFRs substantially enough to be detected at the $p=0.05$ level [@CDC].
+
+The final set of analyses involved predicting the minimum SL required for each EFR test to detect an EFR, and determining how the minimum SL required varied by carrier and frequency group. For this analysis, fixed-effects models were deemed appropriate because SL already accounts for the variation in subject audibility threshold, making it akin to a standardized measure of audibility across all subjects. In addition, the goal of prediction in this analysis is to provide a measure of overall responsiveness for the Rayleigh and F-tests to SL, irrespective of subject. Note also that the predictions relate to the mean SL required for each test to detect a response, and do not distinguish between 'accurate' and 'inaccurate' detections.
+
+Two fixed-effects logistic regression models, called the SL-R and SL-F models, were fit using EFR detection as a binary response and SL as a continuous predictor. Four additional fixed-effects logistic regression models---called Carrier-R, Frequency-R, Carrier-F, and Carrier-R---were also fit with each of the two EFR test's detection as a binary response, SL as a continuous predictor, and one categorical variable (frequency group or carrier) as an additional predictor. The formulation of these two types of models is given below.
+
+\begin{align*}
+\text{(SL}-t~\text{model)} t_i&=\beta_0 + \beta_{1} X_{1i} + \varepsilon_i\\
+\text{(}C-t~\text{model)} t_i&=\beta_0 + \beta_{1} X_{1i} + \beta_{2} X_{2i} + \dots + \beta_{\ell} X_{\ell i} + \varepsilon_i
+\end{align*}
+
+For both models the response $t_i$ corresponds to whether test $t$ indicated a detected EFR for the $i^{th}$ observation ($t_i=1$) or did not ($t_i=0$). The intercept coefficient $\beta_0$ in both models indicates the log-odds of the test detecting an EFR when SL is zero; in the models that include categorical predictors $C$ ($C=\{\text{Carrier, Frequency}\}$), the intercept coefficient represents the log-odds that an EFR is detected for the reference level of $C$. The slope coefficient for SL, $\beta_1$ represents the change in log-odds of detecting an EFR when SL is increased by 1 dB (and, in the models with categorical predictors, when the values of the other predictors are held constant), with $X_{1i}$ representing the SL of the $i^{th}$ observation. The remaining regression coefficients $\beta_p$ and predictors $X_{pi}$ have the same interpretation as their counterparts in the previous analysis; namely, they reflect the change in log-odds of EFR detection relative to the intercept for the $p^{th}$ level of the categorical predictor when SL is held constant, with the model representing the reference category when all $X_p=0$. Finally, $\varepsilon_i$ is interpreted the same way in this model as in the previous models.
+
+Both sets of models share the same set of assumptions. The key assumptions are independence of observations, the absence of multicollinearity among the predictors, and the linearity of the relationship between independent variables and the log-odds of the response. The latter two are satisfied by SL and both categorical predictors, as the logistic curve of the plot of SL against the probability of EFR detection below indicate; additionally, the variance inflation factor for each predictor was calculated for each model, and none of the models produced VIF values greater than 2.5, with most lower than 2, indicating that the predictors do not suffer from multicollinearity.
+
+The former is, of course, violated by these models, but its violation is not particularly worrisome given the goal of this analysis. A mixed-effects model would result in one predicted minimum SL required for EFR detection per subject, and these predictions could not be generalized in any meaningful way (e.g., by averaging) because they would correspond to different distributions. Thus, violating non-independence of observations, while important to note, was necessary to find the test-level relationship between SL and detection ability, rather than the patient-test-level relationship. This violation of assumptions is certainly a major caveat on the results, but because comparative inferrence or statistical tests will not be performed on the results, the only notable impact is the potential for non-generalizability of the specific predicted values to a different set of patients, which is not the goal of this analysis.
+
+```{r preds, echo=F, message=F, include=F, cache=T}
+
+#### Interaction plots ####
+with(aud, interaction.plot(SPL, Carrier, Rayleigh))
+with(aud, interaction.plot(SPL, Carrier, Ftest))
+
+
+#### Min SL for Resp ####
+#### RT, SL only ####
+SL_mod_R <- glm(RT~SL, data=train_data, family = binomial)
+SL_seq_R <- seq(-15, 55, by=.1)
+SL_pred_R <- predict(SL_mod_R,
+               data.frame("SL"=SL_seq_R),
+               type="response", se.fit = T)
+SL_in_50_R_num <- min(which(SL_pred_R$fit>.5))
+SL_min_50_R <- SL_seq_R[SL_in_50_R_num]
+
+#### FT, SL only ####
+SL_mod_F <- glm(FT~SL, data=train_data, family = binomial)
+SL_seq_F <- seq(-15, 55, by=.1)
+SL_pred_F <- predict(SL_mod_F,
+               data.frame("SL"=SL_seq_F),
+               type="response", se.fit = T)
+SL_in_50_F_num <- min(which(SL_pred_F$fit>.5))
+SL_min_50_F <- SL_seq_F[SL_in_50_F_num]
+
+#### RT, SL and Carrier ####
+{SL_mod_R_Car <- glm(RT~SL+Carrier, data=train_data, family = binomial)
+carriers <- unique(train_data$Carrier)
+
+for(i in 1:length(carriers)){
+  list_dat <- predict(SL_mod_R_Car,
+               data.frame("SL"=SL_seq_R,
+                          "Carrier"=rep(carriers[i], length(SL_seq_R))),
+               type="response", se.fit = T)
+  assign(paste(as.character(carriers[i]),"R_Car", sep=""),
+         list_dat)
+}
+
+pred_mat_Car <- matrix(nrow=length(SL_seq_R), ncol=length(carriers))
+SE_mat_Car <- matrix(nrow=length(SL_seq_R), ncol=length(carriers))
+for(i in 1:length(carriers)){
+  pred_mat_Car[,i] <- get(paste(as.character(carriers[i]),
+                                "R_Car", sep=""))[[1]]
+  SE_mat_Car[,i] <- get(paste(as.character(carriers[i]),
+                                "R_Car", sep=""))[[2]]
+}
+colnames(pred_mat_Car) <- as.character(carriers)
+colnames(SE_mat_Car) <- as.character(carriers)
+pred_mat_Car <- as.data.frame(pred_mat_Car)
+
+min_vec_R_Car <- rep(NA, ncol(pred_mat_Car))
+for(i in 1:ncol(pred_mat_Car)){
+  min_vec_R_Car[i] <- min(which(pred_mat_Car[,i]>.5))
+}
+
+gat_pred_Car <- gather(pred_mat_Car, key = "Carrier", value="Prediction")
+gat_pred_Car$Carrier <- factor(gat_pred_Car$Carrier,
+                               levels=unique(gat_pred_Car$Carrier))
+gat_pred_Car$Seq <- rep(SL_seq_R, 8)}
+
+pred_mat_Car[(min_vec_R_Car),]
+SE_mat_Car[(min_vec_R_Car),]
+SLS_R_F <- SL_seq_R[(min_vec_R_Car)]
+
+#### RT, SL and Freq ####
+{SL_mod_R_Freq <- glm(RT~SL+Freq, data=train_data, family = binomial)
+freqs <- unique(train_data$Freq)
+
+for(i in 1:length(carriers)){
+  list_dat <- predict(SL_mod_R_Freq,
+               data.frame("SL"=SL_seq_R,
+                          "Freq"=rep(freqs[i], length(SL_seq_R))),
+               type="response", se.fit = T)
+  assign(paste(as.character(freqs[i]),"R_Freq", sep=""),
+         list_dat)
+}
+
+pred_mat_Freq <- matrix(nrow=length(SL_seq_R), ncol=length(freqs))
+SE_mat_Freq <- matrix(nrow=length(SL_seq_R), ncol=length(freqs))
+for(i in 1:length(freqs)){
+  pred_mat_Freq[,i] <- get(paste(as.character(freqs[i]),
+                                "R_Freq", sep=""))[[1]]
+  SE_mat_Freq[,i] <- get(paste(as.character(freqs[i]),
+                                "R_Freq", sep=""))[[2]]
+}
+colnames(pred_mat_Freq) <- as.character(freqs)
+colnames(SE_mat_Freq) <- as.character(freqs)
+pred_mat_Freq <- as.data.frame(pred_mat_Freq)
+
+min_vec_R_Freq <- rep(NA, ncol(pred_mat_Freq))
+for(i in 1:ncol(pred_mat_Freq)){
+  min_vec_R_Freq[i] <- min(which(pred_mat_Freq[,i]>.5))
+}
+
+gat_pred_Freq <- gather(pred_mat_Freq, key = "Frequency", value="Prediction")
+gat_pred_Freq$Freq <- factor(gat_pred_Freq$Freq,
+                             levels=c("Low","Med","High"))
+gat_pred_Freq$Seq <- rep(SL_seq_R, length(freqs))}
+
+ggplotColours <- function(n = 6, h = c(0, 360) + 15){
+  if ((diff(h) %% 360) < 1) h[2] <- h[2] - 360/n
+  hcl(h = (seq(h[1], h[2], length = n)), c = 100, l = 65)
+}
+
+pred_mat_Freq[rev(min_vec_R_Freq),]
+SE_mat_Freq[rev(min_vec_R_Freq),]
+
+SLS_R_freq <- SL_seq_R[(min_vec_R_Freq)]
+
+#### FT, SL and Carrier ####
+
+{SL_mod_F_Car <- glm(FT~SL+Carrier, data=train_data, family = binomial)
+
+for(i in 1:length(carriers)){
+  list_dat <- predict(SL_mod_F_Car,
+               data.frame("SL"=SL_seq_F,
+                          "Carrier"=rep(carriers[i], length(SL_seq_F))),
+               type="response", se.fit = T)
+  assign(paste(as.character(carriers[i]),"F_Car", sep=""),
+         list_dat)
+}
+
+pred_mat_Car_F <- matrix(nrow=length(SL_seq_F), ncol=length(carriers))
+SE_mat_Car_F <- matrix(nrow=length(SL_seq_F), ncol=length(carriers))
+for(i in 1:length(carriers)){
+  pred_mat_Car_F[,i] <- get(paste(as.character(carriers[i]),
+                                "F_Car", sep=""))[[1]]
+  SE_mat_Car_F[,i] <- get(paste(as.character(carriers[i]),
+                                "F_Car", sep=""))[[2]]
+}
+colnames(pred_mat_Car_F) <- as.character(carriers)
+colnames(SE_mat_Car_F) <- as.character(carriers)
+pred_mat_Car_F <- as.data.frame(pred_mat_Car_F)
+
+min_vec_F_Car <- rep(NA, ncol(pred_mat_Car_F))
+for(i in 1:ncol(pred_mat_Car_F)){
+  min_vec_F_Car[i] <- min(which(pred_mat_Car_F[,i]>.5))
+}
+
+pred_mat_Car_F[min_vec_F_Car,]
+SE_mat_Car_F[min_vec_F_Car,]
+SLS_F_F <- SL_seq_F[min_vec_F_Car]
+
+SLS_car_df <- t(data.frame("Rayleigh"=SLS_R_F,
+                           "F-Test"=SLS_F_F))
+colnames(SLS_car_df) <- unique(aud$Carrier)
+rownames(SLS_car_df) <- c("Rayleigh", "F-Test")
+
+gat_pred_Car_F <- gather(pred_mat_Car_F,
+                         key = "Carrier", value="Prediction")
+gat_pred_Car_F$Carrier <- factor(gat_pred_Car_F$Carrier,
+                               levels=unique(gat_pred_Car_F$Carrier))
+gat_pred_Car_F$Seq <- rep(SL_seq_F, 8)}
+
+{R_car <- ggplot(data=gat_pred_Car,
+                aes(x=Seq, y=Prediction, col=Carrier)) +
+  geom_line() + theme_classic() +
+  ggtitle("Rayleigh Test Predicted Detection \nProbability Curve for Carriers over SL") +
+  xlab("Sensation Level") + ylab("Predicted Detection Probability") +
+  theme(legend.position = "none")
+F_car <- ggplot(data=gat_pred_Car_F,
+                aes(x=Seq, y=Prediction, col=Carrier)) +
+  geom_line() + theme_classic() +
+  ggtitle("F-Test Predicted Detection \nProbability Curve for Carriers over SL") +
+  xlab("Sensation Level") + ylab("Predicted Detection Probability")+
+  theme(legend.text = element_text(size=13),
+        legend.title = element_text(size=15))}
+
+#### FT, SL and Freq ####
+{SL_mod_F_Freq <- glm(FT~SL+Freq, data=train_data, family = binomial)
+
+for(i in 1:length(carriers)){
+  list_dat <- predict(SL_mod_F_Freq,
+               data.frame("SL"=SL_seq_F,
+                          "Freq"=rep(freqs[i], length(SL_seq_F))),
+               type="response", se.fit = T)
+  assign(paste(as.character(freqs[i]),"F_Freq", sep=""),
+         list_dat)
+}
+
+pred_mat_Freq_F <- matrix(nrow=length(SL_seq_F), ncol=length(freqs))
+SE_mat_Freq_F <- matrix(nrow=length(SL_seq_F), ncol=length(freqs))
+for(i in 1:length(freqs)){
+  pred_mat_Freq_F[,i] <- get(paste(as.character(freqs[i]),
+                                "F_Freq", sep=""))[[1]]
+  SE_mat_Freq_F[,i] <- get(paste(as.character(freqs[i]),
+                                "F_Freq", sep=""))[[2]]
+}
+colnames(pred_mat_Freq_F) <- as.character(freqs)
+colnames(SE_mat_Freq_F) <- as.character(freqs)
+pred_mat_Freq_F <- as.data.frame(pred_mat_Freq_F)
+
+min_vec_F_Freq <- rep(NA, ncol(pred_mat_Freq_F))
+for(i in 1:ncol(pred_mat_Freq_F)){
+  min_vec_F_Freq[i] <- min(which(pred_mat_Freq_F[,i]>.5))
+}
+
+pred_mat_Freq_F[min_vec_F_Freq,]
+SE_mat_Freq_F[min_vec_F_Freq,]
+SLS_F_freq <- SL_seq_F[min_vec_F_Freq]
+
+SLS_freq_df <- t(data.frame("Rayleigh"=SLS_R_freq,
+             "F-Test"=SLS_F_freq))
+colnames(SLS_freq_df) <- unique(aud$Freq)
+rownames(SLS_freq_df) <- c("Rayleigh", "F-Test")
+
+gat_pred_Freq_F <- gather(pred_mat_Freq_F, key = "Frequency", value="Prediction")
+gat_pred_Freq_F$Freq <- factor(gat_pred_Freq_F$Freq,
+                             levels=c("Low","Med","High"))
+gat_pred_Freq_F$Seq <- rep(SL_seq_F, length(freqs))}
+
+{R_freq <- ggplot(data=gat_pred_Freq,
+                 aes(x=Seq, y=Prediction, col=Frequency)) +
+  geom_line() + 
+  theme_classic() +
+  ggtitle("Rayleigh Test Predicted Detection \nProbability Curve for Frequency Groups over SL") +
+  xlab("Sensation Level") + 
+    ylab("Predicted Detection Probability") +
+  theme(legend.position = "none")
+F_freq <- ggplot(data=gat_pred_Freq_F, 
+                 aes(x=Seq, y=Prediction, col=Frequency)) +
+  geom_line() + 
+  theme_classic() +
+  ggtitle("F-Test Predicted Detection \nProbability Curve for Frequency Groups over SL") +
+  xlab("Sensation Level") + 
+  ylab("Predicted Detection Probability") +
+  scale_color_discrete(breaks=c("Low","Med","High"))+
+  theme(legend.text = element_text(size=13),
+        legend.title = element_text(size=15))}
+
+```
+
+First, using each SL-only model, the predicted probability of test $t$ detecting an EFR was calculated for SLs between -15 and 55 (the range of the original data) in increments of 0.1. The minimum SL required for detection was determined using a threshold predicted probability of 0.5 (that is, the predicted probability of the test returning an EFR detection being better than random chance). For the Rayleigh test, the minimum SL required for a 50\% predicted probability of detection was `r SL_min_50_R`, while the corresponding SL for the F-test was `r SL_min_50_F`. The prediction curves with these threshold predictions marked are given below.
+
+```{r sl-only, include=T, fig.align="center", fig.cap="Prediction Curves for Rayleigh and F-Tests over Sensation Level."}
+par(mfrow=c(1,2))
+{plot(y=SL_pred_R$fit,
+     x=SL_seq_R, type="l", xlab="SL Value",
+     ylab="Predicted Probability of Detection",
+     main="Rayleigh Test Detection\nProbability Across SL")
+lines(x=c(SL_min_50_R, SL_min_50_R),
+      y=c(0, SL_pred_R$fit[SL_in_50_R_num]),
+      col="red")
+lines(x=c(-20, SL_min_50_R), y=c(0.5, 0.5),
+      col="red")
+plot(y=SL_pred_F$fit,
+     x=SL_seq_F, type="l", xlab="SL Value",
+     ylab="Predicted Probability of Detection",
+     main="F-Test Detection \nProbability Across SL")
+lines(x=c(SL_min_50_F, SL_min_50_F),
+      y=c(0, SL_pred_F$fit[SL_in_50_F_num]),
+      col="red")
+lines(x=c(-20, SL_min_50_F), y=c(0.5, 0.5),
+      col="red")}
+```
+
+Similarly, using the C$-t$ models, the predicted probability of test $t$ detecting an EFR was calculated for each level of categorical predictor $C$ on the range of SLs between -15 and 55 in increments of 0.1. The same minimum threshold was used as above. The minimum SL values corresponding to a predicted probability of EFR detection greater than 0.5 for each test and categorical predictor level is given below, along with the prediction curves.
+
+```{r sl-car, include=T, fig.align="center", fig.cap="Prediction Curves for Rayleigh and F-Tests by Carrier over Sensation Level."}
+grid.arrange(R_car, F_car, ncol=2)
+```
+
+```{r xtab carrier, echo=F, message=F, results='asis'}
+
+print(xtable(SLS_car_df,
+             caption = "Minimum SL for Predicted Probability of Rayleigh and F-Tests Detecting EFR Greater than 0.5 by Carrier"), comment=F)
+
+
+```
+
+```{r sl-freq, include=T, fig.align="center", fig.cap="Prediction Curves for Rayleigh and F-Tests by Frequency over Sensation Level."}
+grid.arrange(R_freq, F_freq, ncol=2)
+```
+
+```{r xtab freq, echo=F, message=F, results='asis'}
+
+print(xtable(SLS_freq_df,
+             caption = "Minimum SL for Predicted Probability of Rayleigh and F-Tests Detecting EFR Greater than 0.5 by Frequency Group"), comment=F,
+      table.placement="!htbp")
+
+
+```
+
+The results for both tests and categorical predictors suggest the same general relationship between EFR detection and SL when considering frequency groups and carriers: high frequency dominant carriers have a lower mean SL threshold required to produce a probability of each test detecting an EFR greater than 0.5. Whether this result corresponds to these carriers and frequency groups having a measurably distinct effect on subjects' brain waves, or whether it simply indicates that the brain wave patterns corresponding to these carriers and frequency groups are easier for the EFR tests to detect (that is, whether the difference is a feature of the carriers, the EFRs, or both) is a separate question for specialists in the field of linguistic neurology that cannot be determined by statistical analysis alone. Similarly, the minimum SL for EFR detection of low- and mid-frequency dominant carriers were different in aggregate, but the variation by carrier was not systematic enough to conclude that this aggregate difference is meaningful for either test.
+
+One final observation is that all of the predicted minimum SLs were positive, and most were larger than 10. This indicates that the minimum SL required for either test to indicate detection of any stimuli at a better-than-random probability is higher than the SL required for the stimuli to be audible. One possible interpretation of this result is that the EFR tests---and the 0.05 p-value definition of detection---are "conservative". That is, the tests only indicate detected EFRs under this definition when the stimuli produce significant changes in the subject's brain waves, which results in a measure of audibility with a higher false negative rate, but substantial discretionary ability.
+
+# Discussion
+
+The analyses suggest that both the Rayleigh test for EFR inter-trial phase consistency and the F-test for EFR amplitude are reasonably accurate measures of audibility, with areas under the ROC curve indicating a "strong" ability to distinguish between true positives (audible stimuli) and true negatives (inaudible stimuli). There is additionally insufficient evidence to suggest a difference between the accuracy of these two EFR tests, as indicated b the paired test for difference in AUC. Similarly, the Chi-square tests for goodness of fit on the distributions of correct predictions produced by 10-fold validation indicate that the accuracy of the tests was not substantially affected by carrier or frequency group, but was significantly affected by SPLs and, in particular, very low SPLs that bordered on inaudible (20 dB).
+
+Finally, both EFR detection tests required SLs greater than zero to produce a mean predicted probability of indicating detection---accurately or not---greater than 0.5, and these minimum SLs were lowest for carriers corresponding to high frequency dominant sounds, while low and mid frequency dominant sounds required similar SLs to produce a better-than-random predicted probability of detection. One possible interpretation of these results is that the EFR detection tests are "conservative" when using a p-value cutoff of 0.05 for detection, an interpretation that aligns well with their relatively strong discretionary abilities.
+
+The limitations for these analyses come from the experimental design that produced the dataset, in addition to a lack of personal subject area expertise. First, the experiment tested every carrier/SPL combination on every subject, which means that a theoretical mixed-effects model that accounts for both subject- and item-level random effects (that is, the within-subject and within-carrier/SPL combination random variances) would lack sufficient degrees of freedom to fit a model because the resulting model matrix would be singular. In other words, it was not possible to account for the randomness produced by the stimuli without simply controlling away all randomness in the model. A clear, albeit potentially costly, solution to this problem would be to vary carrier and SPL combinations randomly by subject, possibly by including a greater variety of each in the experiment. This would produce a number of distinct "items" (carrier/SPL combinations) that would allow more robust mixed-effect modeling. Finally, the lack of a direct metric for EFRs limited the analysis. The use of p-values for detection means that more direct and nuanced analysis of detection was not possible.
+
+Second, linguistic neurology is a complex field, and my personal knowledge in this area is lacking. As a result, even after a significant process of pre-analysis research, it is possible that my interpretations of the dataset are either lacking or use wording that would be considered imprecise among experts in the field. This limitation also led me to take a more conservative approach to analysis which, while not inherently problematic, resulted in a final report that potentially overlooked more illuminating approaches to analyzing the data due to a relative lack of foundational understanding of what I "should" be looking for. In a perfect world with infinite time, the obvious solution to this limitation would be a more extensive preparatory research phase. Another remedy that would likely be available in "real world" data analysis would be to discuss the data with the researchers who collected it so as to incorporate their subject knowledge and analytical goals into the report.
+
+# References
